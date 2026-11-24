@@ -2,14 +2,17 @@
 
 import copy
 import io
+import os
 import sys
 import unittest
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
+from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from controller.controller_compra import ControllerCompra
+from controller.controller_compra import ControllerCompra, converter_data
 from controller.controller_fornecedor import ControllerFornecedor
 from controller.controller_item_compra import ControllerItemCompra
 from controller.controller_produto import ControllerProduto
@@ -461,6 +464,160 @@ class ControllersMongoTest(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.compra()
         self.assertEqual(self.compras.listar(), [])
+
+    def test_datas_validas_e_texto_invalido(self):
+        esperado = date(2026, 11, 24)
+        for valor in (esperado, datetime(2026, 11, 24, 15, 30),
+                      "2026-11-24", "24/11/2026", "11-24-2026",
+                      "2026-11-24T15:30:00", "2026-11-24 15:30:00"):
+            with self.subTest(valor=valor):
+                self.assertEqual(converter_data(valor), esperado)
+        for valor in ("2026-11-24lixo", "2026-11-24T99:99:99", "31/02/2026", None):
+            with self.subTest(valor=valor), self.assertRaises(ValueError):
+                converter_data(valor)
+
+    def test_rejeita_id_gerado_duplicado_sem_gravar(self):
+        compra = self.compra()
+        item = self.itens.inserir(ItemCompra(None, compra, Produto(1), 1, 10))
+        nova_compra = Compra(None, Fornecedor(1), date.today(), "PENDENTE")
+        novo_item = ItemCompra(None, compra, Produto(1), 2, 20)
+        for controller, objeto, codigo, colecao in (
+            (self.compras, nova_compra, compra.get_id_compra(), "compra"),
+            (self.itens, novo_item, item.get_id_item(), "item_compra"),
+        ):
+            antes = self.banco.fechamentos
+            with self.subTest(colecao=colecao):
+                with patch.object(self.banco, "obter_proximo_id", return_value=codigo):
+                    with self.assertRaisesRegex(ValueError, "ID gerado"):
+                        controller.inserir(objeto)
+                self.assertEqual(self.banco.contar_documentos(colecao), 1)
+                self.assertGreater(self.banco.fechamentos, antes)
+        self.assertIsNone(nova_compra.get_id_compra())
+        self.assertIsNone(novo_item.get_id_item())
+
+    def test_compra_valida_status_data_e_tipo_antes_de_gravar(self):
+        for status in (None, "", "   ", "X" * 13, 123):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                self.compras.inserir(Compra(None, Fornecedor(1), date.today(), status))
+        for data in (None, "2026-11-24", 123):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                self.compras.inserir(Compra(None, Fornecedor(1), data, "PENDENTE"))
+        with self.assertRaises(ValueError):
+            self.compras.inserir(object())
+        self.assertEqual(self.compras.listar(), [])
+        compra = self.compras.inserir(
+            Compra(None, Fornecedor(1), datetime(2026, 11, 24, 15, 30), " pendente ")
+        )
+        self.assertEqual(compra.get_status(), "PENDENTE")
+        self.assertEqual(compra.get_data_compra(), date(2026, 11, 24))
+
+    def test_filtros_e_atualizacao_preservam_associacoes(self):
+        compra1 = self.compra()
+        compra2 = self.compra()
+        produto2 = self.produtos.inserir(Produto(None, "Produto dois", None, 20, 4, 1))
+        item = self.itens.inserir(ItemCompra(None, compra1, Produto(1), 1, 10))
+        codigo = item.get_id_item()
+        item.set_compra(compra2)
+        item.set_produto(produto2)
+        salvo = self.itens.atualizar(item)
+        self.assertEqual(salvo.get_id_item(), codigo)
+        self.assertEqual(salvo.get_compra().get_id_compra(), compra2.get_id_compra())
+        self.assertEqual(salvo.get_produto().get_nome(), "Produto dois")
+        self.assertEqual(self.itens.listar(id_compra=compra1.get_id_compra()), [])
+        self.assertEqual(len(self.itens.listar(
+            id_compra=compra2.get_id_compra(), id_produto=produto2.get_id_produto()
+        )), 1)
+        self.assertEqual(self.itens.listar(id_produto=1), [])
+        self.assertEqual(len(self.compras.listar(id_fornecedor=1)), 2)
+        self.assertEqual(self.compras.listar(id_fornecedor=999), [])
+
+    def test_fechamento_apos_falha_de_gravacao(self):
+        compra = self.compra()
+        for controller, objeto, colecao in (
+            (self.compras, Compra(None, Fornecedor(1), date.today(), "PENDENTE"), "compra"),
+            (self.itens, ItemCompra(None, compra, Produto(1), 1, 10), "item_compra"),
+        ):
+            with self.subTest(colecao=colecao):
+                antes = self.banco.fechamentos
+                with patch.object(self.banco.db[colecao], "insert_one",
+                                  side_effect=RuntimeError("Falha simulada")):
+                    with self.assertRaisesRegex(RuntimeError, "Falha simulada"):
+                        controller.inserir(objeto)
+                self.assertGreater(self.banco.fechamentos, antes)
+                codigo = objeto.get_id_compra() if colecao == "compra" else objeto.get_id_item()
+                self.assertIsNone(codigo)
+
+
+@unittest.skipUnless(os.getenv("RUN_MONGO_INTEGRATION") == "1",
+                     "Teste real da VM: ativar RUN_MONGO_INTEGRATION e MONGO_TEST_URI.")
+class ControllersMongoIntegracaoTest(unittest.TestCase):
+    """Usa um banco temporário exclusivo e o remove ao terminar cada teste."""
+
+    def setUp(self):
+        import pymongo
+        from conexion.mongo_queries import ConexaoMongo
+
+        uri = os.getenv("MONGO_TEST_URI")
+        if not uri:
+            self.fail("Defina MONGO_TEST_URI para executar os testes no MongoDB real.")
+        self.cliente = pymongo.MongoClient(uri, serverSelectionTimeoutMS=4000)
+        self.addCleanup(self.cliente.close)
+        self.cliente.admin.command("ping")
+        nome_banco = "teste_c3_parte3_" + uuid4().hex
+        self.db = self.cliente[nome_banco]
+        self.addCleanup(self.cliente.drop_database, nome_banco)
+        ambiente = patch.dict(os.environ, {"MONGO_URI": uri, "MONGO_DB": nome_banco})
+        ambiente.start()
+        self.addCleanup(ambiente.stop)
+        self.banco = ConexaoMongo(permite_escrita=True)
+        self.addCleanup(self.banco.desconectar)
+        self.compras = ControllerCompra(self.banco)
+        self.itens = ControllerItemCompra(self.banco)
+        self.db.fornecedor.insert_one({
+            "id_fornecedor": 1, "nome": "Fornecedor teste VM", "cnpj": "12345678000199",
+        })
+        self.db.produto.insert_one({
+            "id_produto": 1, "nome": "Produto teste VM", "descricao": None,
+            "preco_venda": 20.0, "estoque_atual": 10, "estoque_minimo": 2,
+        })
+
+    def test_crud_e_lookup_no_mongodb_real(self):
+        compra = self.compras.inserir(Compra(None, Fornecedor(1), date.today(), "PENDENTE"))
+        id_compra = compra.get_id_compra()
+        self.assertEqual(compra.get_fornecedor().get_nome(), "Fornecedor teste VM")
+        self.assertTrue(self.compras.existe(id_compra))
+        self.assertEqual(len(self.compras.listar(id_fornecedor=1)), 1)
+        compra.set_status("CONCLUIDA")
+        self.assertEqual(self.compras.atualizar(compra).get_status(), "CONCLUIDA")
+        item = self.itens.inserir(ItemCompra(None, compra, Produto(1), 2, Decimal("10.50")))
+        id_item = item.get_id_item()
+        self.assertEqual(item.get_produto().get_nome(), "Produto teste VM")
+        self.assertEqual(item.get_compra().get_fornecedor().get_nome(), "Fornecedor teste VM")
+        self.assertEqual(self.itens.buscar(id_item).get_quantidade(), 2)
+        self.assertTrue(self.itens.existe(id_item))
+        self.assertEqual(len(self.itens.listar(id_compra=id_compra, id_produto=1)), 1)
+        item.set_quantidade(3)
+        item.set_preco_unitario(Decimal("11.25"))
+        salvo = self.itens.atualizar(item)
+        self.assertEqual(salvo.get_quantidade(), 3)
+        self.assertEqual(salvo.get_preco_unitario(), 11.25)
+        with self.assertRaisesRegex(ValueError, "possui itens"):
+            self.compras.excluir(id_compra)
+        self.assertTrue(self.itens.excluir(id_item))
+        self.assertTrue(self.compras.excluir(id_compra))
+        self.assertIsNone(self.itens.buscar(id_item))
+        self.assertIsNone(self.compras.buscar(id_compra))
+        self.assertEqual(self.db.produto.find_one({"id_produto": 1})["estoque_atual"], 10)
+
+    def test_referencias_invalidas_no_mongodb_real(self):
+        with self.assertRaisesRegex(ValueError, "Fornecedor nao encontrado"):
+            self.compras.inserir(Compra(None, Fornecedor(999), date.today(), "PENDENTE"))
+        compra = self.compras.inserir(Compra(None, Fornecedor(1), date.today(), "PENDENTE"))
+        with self.assertRaisesRegex(ValueError, "Produto nao encontrado"):
+            self.itens.inserir(ItemCompra(None, compra, Produto(999), 1, 10))
+        with self.assertRaisesRegex(ValueError, "Compra nao encontrada"):
+            self.itens.inserir(ItemCompra(None, Compra(999), Produto(1), 1, 10))
+        self.assertEqual(self.db.item_compra.count_documents({}), 0)
 
 
 if __name__ == "__main__":

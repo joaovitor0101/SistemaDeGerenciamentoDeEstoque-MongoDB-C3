@@ -28,7 +28,11 @@ def converter_data(valor) -> date:
     if isinstance(valor, date):
         return valor
     if isinstance(valor, str):
-        texto = valor.strip()[:10]
+        texto = valor.strip()
+        try:
+            return datetime.fromisoformat(texto).date()
+        except ValueError:
+            pass
         for formato in ("%Y-%m-%d", "%d/%m/%Y", "%m-%d-%Y"):
             try:
                 return datetime.strptime(texto, formato).date()
@@ -132,6 +136,8 @@ class ControllerCompra:
         documento = {"id_compra": codigo, **dados}
         try:
             db = self.banco.conectar()
+            if db[self.COLECAO].find_one({"id_compra": codigo}):
+                raise ValueError("Ja existe uma compra com o ID gerado.")
             db[self.COLECAO].insert_one(documento)
         finally:
             self.banco.desconectar()

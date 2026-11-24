@@ -148,6 +148,8 @@ class ControllerItemCompra:
         codigo = self.banco.obter_proximo_id(self.COLECAO, "id_item")
         try:
             db = self.banco.conectar()
+            if db[self.COLECAO].find_one({"id_item": codigo}):
+                raise ValueError("Ja existe um item de compra com o ID gerado.")
             db[self.COLECAO].insert_one({"id_item": codigo, **dados})
         finally:
             self.banco.desconectar()

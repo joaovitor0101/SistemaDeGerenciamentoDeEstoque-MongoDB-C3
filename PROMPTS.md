@@ -51,3 +51,40 @@ Este documento registra os prompts utilizados pelo grupo como apoio técnico ao 
   > *"Adapte src/reports/relatorios.py para gerar os relatórios diretamente no MongoDB usando pipelines de agregação ($lookup, $unwind, $group, $project e $sort) para sumarização de compras por fornecedor, junção de itens de compra, estoque baixo e relatórios individuais. Atualize também o splash_screen.py para contar documentos nas coleções do MongoDB e adapte os testes automatizados."*
 - **Aplicação pelo Grupo:**
   - Implementamos os pipelines de agregação em `src/reports/relatorios.py` exibindo os resultados em `pandas.DataFrame`, atualizamos `src/utils/splash_screen.py` e `src/principal.py` e validamos todas as operações com a suíte `tests/test_controllers.py`.
+
+---
+
+## 5. Revisão local da Parte 3 — Compra, Item de Compra e Testes
+
+- **Fonte / Ferramenta:** ChatGPT/Codex.
+- **Data da consulta:** 24/11/2026.
+- **Integrante:** Miguel Gomes Silveira (`miguelgomessilveira7-cmd`).
+- **Solicitações:** revisar a parte atribuída ao integrante e preparar localmente os controllers de compra e item de compra e os testes para MongoDB, seguindo o fluxo de validação utilizado na C2. Esta descrição é uma síntese dos pedidos da conversa.
+- **Aplicação do apoio:** a revisão partiu das versões já publicadas pelo grupo. Foram mantidos os métodos públicos e os pipelines com `$lookup`, acrescentando verificação de colisão do ID gerado antes da inclusão e corrigindo a conversão de datas para rejeitar texto inválido após a data, preservando suporte a datas ISO e aos formatos já utilizados.
+- **Testes acrescentados:** validação de datas e status, IDs gerados duplicados, alteração das associações, filtros combinados e fechamento da conexão após falha simulada de gravação. Também foram preparados dois testes opcionais com MongoDB real, para CRUD, agregação `$lookup`, referências inexistentes e bloqueio da exclusão de compra com itens.
+- **Validação local:** 15 testes passaram; os dois testes de integração foram ignorados por padrão, pois não foi conectado um servidor MongoDB nesta execução. Os testes locais utilizam a implementação em memória já existente no projeto. Não comprovam o funcionamento na VM.
+
+- **Validação na VM (24/11/2026):** a suíte executou no Ubuntu da VM LabDatabase com Python 3.12 e MongoDB real em contêiner. Os 17 testes passaram, sem testes ignorados, incluindo os dois de integração de compra e item de compra. Foram confirmados CRUD, associações com `$lookup`, validação de referências, bloqueio de exclusão da compra com itens e preservação do estoque. Os bancos temporários foram removidos ao final (nenhum restante). Essa execução valida os controllers nos cenários testados; não equivale a testar todo o menu interativo ou a migração completa do grupo.
+
+### Como executar os testes
+
+Na raiz do projeto, com o ambiente Python e as dependências de `requirements.txt` instalados:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+Para validar no MongoDB real da VM, informar em `MONGO_TEST_URI` a URI de conexão do ambiente e ativar os testes de integração:
+
+```sh
+export RUN_MONGO_INTEGRATION=1
+read -r -s -p "URI do MongoDB de teste: " MONGO_TEST_URI
+echo
+export MONGO_TEST_URI
+python -m unittest discover -s tests -v
+unset RUN_MONGO_INTEGRATION MONGO_TEST_URI
+```
+
+Os testes reais criam um banco com nome exclusivo iniciado por `teste_c3_parte3_`, inserem seus próprios documentos e removem somente esse banco ao terminar. O usuário da conexão precisa de permissão para criar e remover esse banco temporário. Não é necessário executar o script de migração nem recriar as coleções de trabalho para rodar esses testes.
+
+A checagem adicional de ID evita inserir um ID já presente no momento da consulta. A estratégia compartilhada de geração por `$max + 1` permanece a do grupo e não assegura unicidade em inclusões simultâneas. A conexão, a migração, os controllers de fornecedor e produto e o menu não foram alterados nesta revisão. Após a validação na VM, o integrante autorizou criar o commit e enviar estes quatro arquivos ao repositório do grupo.
