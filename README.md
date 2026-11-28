@@ -7,7 +7,7 @@ O projeto consiste em um sistema em terminal feito em **Python** integrado ao ba
 ## Integrantes
 
 - Arthur Gava Calil
-- André Luiz Alves Bofonha
+- André Luiz Alves Bolonha
 - Miguel Gomes
 - Kawan Wendler Goldner
 - João Vitor Gnocchi da Cunha
