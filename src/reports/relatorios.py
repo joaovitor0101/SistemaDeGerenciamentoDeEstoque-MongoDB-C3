@@ -52,7 +52,9 @@ class Relatorio:
             {
                 "$group": {
                     "_id": {"id_fornecedor": "$id_fornecedor", "nome": "$nome"},
-                    "compras_ids": {"$addToSet": "$compras.id_compra"},
+                    "compras_ids": {
+                        "$addToSet": {"$ifNull": ["$compras.id_compra", None]}
+                    },
                     "valor_total_compras": {
                         "$sum": {
                             "$multiply": [
@@ -67,7 +69,9 @@ class Relatorio:
                 "$project": {
                     "_id": 0,
                     "nome_fornecedor": "$_id.nome",
-                    "quantidade_compras": {"$size": "$compras_ids"},
+                    "quantidade_compras": {
+                        "$size": {"$setDifference": ["$compras_ids", [None]]}
+                    },
                     "valor_total_compras": {"$round": ["$valor_total_compras", 2]},
                 }
             },
@@ -199,7 +203,17 @@ class Relatorio:
         """Lista isoladamente todos os documentos da coleção 'fornecedor'."""
         try:
             db = self.conexao.conectar()
-            docs = list(db["fornecedor"].find({}, {"_id": 0}).sort("id_fornecedor", 1))
+            docs = list(db["fornecedor"].aggregate([
+                {"$project": {
+                    "_id": 0,
+                    "id_fornecedor": 1,
+                    "nome": 1,
+                    "cnpj": 1,
+                    "telefone": 1,
+                    "email": 1,
+                }},
+                {"$sort": {"id_fornecedor": 1}},
+            ]))
             registros = [
                 {
                     "id_fornecedor": d.get("id_fornecedor"),
@@ -224,7 +238,18 @@ class Relatorio:
         """Lista isoladamente todos os documentos da coleção 'produto'."""
         try:
             db = self.conexao.conectar()
-            docs = list(db["produto"].find({}, {"_id": 0}).sort("id_produto", 1))
+            docs = list(db["produto"].aggregate([
+                {"$project": {
+                    "_id": 0,
+                    "id_produto": 1,
+                    "nome": 1,
+                    "descricao": 1,
+                    "preco_venda": 1,
+                    "estoque_atual": 1,
+                    "estoque_minimo": 1,
+                }},
+                {"$sort": {"id_produto": 1}},
+            ]))
             registros = [
                 {
                     "id_produto": d.get("id_produto"),
